@@ -1,0 +1,15 @@
+{
+  "packages": [".."],
+  "subagents": {
+    "agentScanDirs": ["./agents"]
+  },
+  "minimalClaude": {
+    "shortcuts": {
+      "agentCycle": "alt+shift+tab",
+      "agentCycleAlt": "ctrl+shift+a",
+      "approvalCycle": "alt+m"
+    },
+    "agentOrder": ["worker", "planner", "explorer", "debugger"],
+    "mode": "manual"
+  }
+}
