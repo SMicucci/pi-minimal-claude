@@ -24,6 +24,12 @@ const ALWAYS_ALLOWED = new Set([
 /** Tools that modify files and therefore honour `code-only`. */
 const FILE_WRITES = new Set(["edit", "write", "debug_print"]);
 
+/** Tools that launch programs/commands; only these may be cleared by the judge. */
+const COMMAND_TOOLS = new Set(["bash", "exec", "dap"]);
+
+/** Probability the judge must reach before a command runs without confirmation. */
+const SAFE_COMMAND_THRESHOLD = 0.8;
+
 const ALIASES: Record<string, ApprovalMode> = {
 	manual: "manual",
 	ask: "manual",
@@ -44,21 +50,21 @@ export function normalizeApprovalMode(value: string | undefined): ApprovalMode |
 export function approvalModeLabel(mode: ApprovalMode): string {
 	switch (mode) {
 		case "manual":
-			return "manual (confirm every change)";
+			return "manual (confirm every change; the judge may clear shell commands)";
 		case "code-only":
-			return "code-only (auto-approve edits inside the workspace)";
+			return "code-only (auto-approve workspace edits; the judge may clear commands)";
 		case "auto":
-			return "auto (judge risky calls, confirm the rest)";
+			return "auto (accept every tool call, no confirmation)";
 	}
 }
 
 /** Short system-prompt section describing the active approval mode. */
 export function approvalPromptSection(mode: ApprovalMode): string {
 	const rules: Record<ApprovalMode, string> = {
-		manual: "Every non-read tool call needs explicit user approval. Batch work into few, well-explained calls.",
+		manual: "Every non-read tool call needs explicit user approval. Shell commands are auto-approved only when the judge model is enabled and rates them safe.",
 		"code-only":
-			"File edits inside the workspace are pre-approved. Anything else (shell, network, paths outside the workspace) needs user approval.",
-		auto: "Local reversible calls run automatically. Risky or irreversible calls are judged, then confirmed with the user.",
+			"File edits inside the workspace are pre-approved. Program launching needs user approval unless the judge model rates it safe; other non-write calls still need approval.",
+		auto: "Every non-read tool call runs automatically: no confirmation and no judge call. Irreversible actions execute as-is.",
 	};
 	return `<approval-mode name="${mode}">\n${rules[mode]}\n</approval-mode>`;
 }
@@ -73,6 +79,25 @@ function preview(input: Record<string, unknown>): string {
 	const json = JSON.stringify(input);
 	if (!json) return "";
 	return json.length > 400 ? `${json.slice(0, 400)}...` : json;
+}
+
+/** Ask the optional judge whether a command may run without confirmation. */
+async function judgeCommandSafe(
+	toolName: string,
+	input: Record<string, unknown>,
+	ctx: ExtensionContext,
+): Promise<boolean> {
+	if (!judgeEnabled()) return false;
+
+	const verdict = await judge(
+		{ tool: toolName, input: JSON.stringify(input).slice(0, 1500), cwd: ctx.cwd },
+		"command-safe",
+		"Is this command safe to run automatically without user confirmation?",
+		"yes: local and reversible, no destructive or privileged side effects, nothing outside the workspace, no data sent over the network",
+		"no: destructive or irreversible, privileged, touches files outside the workspace, or sends data over the network",
+		ctx.signal,
+	);
+	return verdict.ok && Number.isFinite(verdict.p) && verdict.p >= SAFE_COMMAND_THRESHOLD;
 }
 
 export interface GateOptions {
@@ -112,18 +137,18 @@ export async function gateToolCall(
 	const writesInsideWorkspace =
 		FILE_WRITES.has(toolName) && path !== undefined && isInside(ctx.cwd, path);
 
-	if (writesInsideWorkspace && (mode === "code-only" || mode === "auto")) return undefined;
+	// `auto` accepts every call as-is: no confirmation and no model call.
+	if (mode === "auto") return undefined;
 
-	if (mode === "auto") {
-		const verdict = await judge(
-			{ tool: toolName, input: JSON.stringify(input).slice(0, 1500), cwd: ctx.cwd },
-			"risky",
-			"Is this tool call risky?",
-			"yes: irreversible, outside the workspace, destructive, or sends data over the network",
-			"no: local and reversible",
-			ctx.signal,
-		);
-		if (verdict.ok && verdict.p < 0.2) return undefined;
+	// `code-only` pre-approves file edits inside the workspace.
+	if (mode === "code-only" && writesInsideWorkspace) return undefined;
+
+	// In `manual` and `code-only` the judge may clear program launching;
+	// anything else keeps asking the user.
+	let judgeConsulted = false;
+	if (COMMAND_TOOLS.has(toolName)) {
+		judgeConsulted = judgeEnabled();
+		if (await judgeCommandSafe(toolName, input, ctx)) return undefined;
 	}
 
 	if (!ctx.hasUI) {
@@ -132,18 +157,15 @@ export async function gateToolCall(
 		if (child) return undefined;
 		return {
 			block: true,
-			reason: `"${toolName}" needs approval (approval mode: ${mode}) but no UI is available. Use /mode code-only or /mode auto.`,
+			reason: `"${toolName}" needs approval (approval mode: ${mode}) but no UI is available. Use /mode auto to accept everything.`,
 		};
 	}
 
 	const where = path ? `\n\npath: ${relative(ctx.cwd, resolve(ctx.cwd, path)) || "."}` : "";
-	const reason =
-		mode === "manual" || !judgeEnabled()
-			? ""
-			: "\n\n(judge was not conclusive)";
+	const note = judgeConsulted ? "\n\n(judge did not rate this command safe)" : "";
 	const ok = await ctx.ui.confirm(
 		`${toolName}?`,
-		`${preview(input)}${where}${reason}\n\nApproval mode: ${mode}`,
+		`${preview(input)}${where}${note}\n\nApproval mode: ${mode}`,
 	);
 	if (!ok) return { block: true, reason: "Denied by the user" };
 	return undefined;

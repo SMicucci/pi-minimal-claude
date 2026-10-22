@@ -123,9 +123,9 @@ thinking level captured before the first activation.
 
 | Mode | Behaviour |
 |---|---|
-| `manual` | every non-read call asks for confirmation |
-| `code-only` | `edit`/`write`/`debug_print` inside the workspace run without asking; shell, network and outside paths still ask |
-| `auto` | local writes run without asking; anything else is sent to the judge (if configured) and only auto-approved when the risk is low, otherwise confirmed |
+| `manual` | every non-read call asks for confirmation; `bash`/`exec`/`dap` are auto-approved only when the judge model is enabled and rates the command safe |
+| `code-only` | `edit`/`write`/`debug_print` inside the workspace run without asking; program launching needs approval unless the judge rates it safe; other calls still ask |
+| `auto` | every non-read call runs without confirmation and without any judge/model call |
 
 Legacy aliases are accepted: `auto-write` → `code-only`, `full-auto` → `auto`.
 
@@ -143,7 +143,11 @@ Rules that always apply:
 
 ### Optional judge
 
-`auto` uses a local judge endpoint when available:
+`manual` and `code-only` use a local judge endpoint to clear program launching
+(`bash`, `exec`, `dap`) before it runs: the command is auto-approved only when
+the judge is enabled, reachable, and returns a safe verdict with `p >= 0.8`.
+Otherwise the user is asked, exactly as when the endpoint is missing. `auto`
+does not call the judge at all.
 
 ```
 PI_JUDGE_URL=http://127.0.0.1:11438/v1/systemone   # default
@@ -166,8 +170,8 @@ subtask boundary. Every call degrades gracefully when the endpoint is missing.
 | `/mode <agent>` | compatibility: activates an agent (agent-modes behaviour) |
 | `/plan` | activate the planner |
 | `/run` | activate the worker on the active plan |
-| `alt+shift+tab` | cycle agents: `worker → planner → explorer → debugger → off` |
-| `ctrl+shift+a` | cycle agents, alternate key |
+| `alt+a` | cycle agents: `worker → planner → explorer → debugger → off` |
+| `alt+shift+tab` | cycle agents, alternate key (Kitty keyboard protocol only) |
 | `alt+m` | cycle approval modes: `manual → code-only → auto` |
 | `--agent <name>` | start with an agent |
 | `--approval-mode <mode>` | start with an approval mode |
@@ -176,6 +180,11 @@ subtask boundary. Every call degrades gracefully when the endpoint is missing.
 extension shortcut on a reserved key is discarded with a startup diagnostic.
 Rebind `app.thinking.cycle` in `keybindings.json` first if you really want
 `shift+tab` for agents.
+
+Prefer plain `alt+<letter>` bindings. Legacy terminals send `alt+a` as
+`ESC` + `a`, so it always arrives, while `ctrl+shift+a` collapses to `ctrl+a`
+and `alt+shift+tab` is captured by Windows as the window switcher (and needs
+the Kitty keyboard protocol elsewhere).
 
 Agent and approval choices are persisted as custom session entries
 (`minimal-claude/agent`, `minimal-claude/approval`) and restored on resume.
@@ -190,8 +199,8 @@ are configured in Pi settings instead (`~/.pi/agent/settings.json` or project
 {
   "minimalClaude": {
     "shortcuts": {
-      "agentCycle": "alt+shift+tab",
-      "agentCycleAlt": "ctrl+shift+a",
+      "agentCycle": "alt+a",
+      "agentCycleAlt": "alt+shift+tab",
       "approvalCycle": "alt+m"
     },
     "agentOrder": ["worker", "planner", "explorer", "debugger"],
@@ -202,8 +211,8 @@ are configured in Pi settings instead (`~/.pi/agent/settings.json` or project
 
 | Key | Default | Meaning |
 |---|---|---|
-| `shortcuts.agentCycle` | `alt+shift+tab` | cycle agents |
-| `shortcuts.agentCycleAlt` | `ctrl+shift+a` | second agent-cycle key |
+| `shortcuts.agentCycle` | `alt+a` | cycle agents |
+| `shortcuts.agentCycleAlt` | `alt+shift+tab` | second agent-cycle key (Kitty protocol only) |
 | `shortcuts.approvalCycle` | `alt+m` | cycle approval modes |
 | `agentOrder` | `worker, planner, explorer, debugger` | rotation/completion order; other discovered agents follow alphabetically |
 | `mode` | `manual` | approval mode used when neither the flag nor the session entry sets one |
@@ -214,9 +223,11 @@ the default. Duplicate keys warn and the second binding is skipped.
 
 Configuration is read from `session_start` (settings are not initialized during
 extension load), so `/reload` applies edits. Verify what Pi actually bound with
-`/hotkeys`. Defaults are free of built-in conflicts; `alt+shift+tab` needs a
-terminal that reports Alt+Shift separately (Kitty keyboard protocol). If yours
-does not, set `agentCycle` to another key.
+`/hotkeys`. Defaults are free of built-in conflicts; `alt+a` and `alt+m` are
+plain `ESC`+letter sequences that every terminal delivers, while the alternate
+`alt+shift+tab` needs a terminal that reports Alt+Shift separately (Kitty
+keyboard protocol) and is captured by Windows otherwise. If yours does not
+forward it, keep `agentCycle` on an `alt+<letter>` key.
 
 Environment overrides take precedence over settings:
 

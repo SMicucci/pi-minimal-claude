@@ -11,8 +11,8 @@
  *   /run                           activate the worker on the active plan
  *
  * Shortcuts (defaults, rebindable from settings `minimalClaude.shortcuts`):
- *   alt+shift+tab  cycle agents
- *   ctrl+shift+a   cycle agents (alternate)
+ *   alt+a          cycle agents
+ *   alt+shift+tab  cycle agents (alternate, Kitty keyboard protocol only)
  *   alt+m          cycle approval modes
  * Flags: --agent <name>, --approval-mode <mode>.
  */

@@ -9,8 +9,8 @@
  * {
  *   "minimalClaude": {
  *     "shortcuts": {
- *       "agentCycle": "alt+shift+tab",
- *       "agentCycleAlt": "ctrl+shift+a",
+ *       "agentCycle": "alt+a",
+ *       "agentCycleAlt": "alt+shift+tab",
  *       "approvalCycle": "alt+m"
  *     },
  *     "agentOrder": ["worker", "planner", "explorer", "debugger"],

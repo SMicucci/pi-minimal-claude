@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
+import { matchesKey } from "@earendil-works/pi-tui";
 
 const pluginRoot = fileURLToPath(new URL("..", import.meta.url));
 const sandbox = mkdtempSync(join(tmpdir(), "pi-minimal-claude-"));
@@ -238,7 +239,7 @@ await h.emit("session_start");
 await check("session_start registers the default shortcuts", () => {
 	assert.deepEqual(
 		[...h.shortcuts.keys()].sort(),
-		["alt+m", "alt+shift+tab", "ctrl+shift+a"],
+		["alt+a", "alt+m", "alt+shift+tab"],
 	);
 	assert.equal(h.statuses.approval, "mode:manual");
 });
@@ -303,7 +304,7 @@ await check("/agent with a wrong name lists agents and opens the selector", asyn
 });
 
 await check("agent rotation shortcut follows worker → planner → explorer → debugger → off", async () => {
-	const handler = h.shortcuts.get("alt+shift+tab").handler;
+	const handler = h.shortcuts.get("alt+a").handler;
 	assert.equal(h.statuses.agent, "agent:worker");
 	await handler(h.ctx);
 	assert.equal(h.statuses.agent, "agent:planner");
@@ -313,6 +314,18 @@ await check("agent rotation shortcut follows worker → planner → explorer →
 	assert.equal(h.statuses.agent, "agent:debugger");
 	await handler(h.ctx);
 	assert.equal(h.statuses.agent, undefined);
+});
+
+await check("agent rotation is reachable from a legacy (non-Kitty) terminal", async () => {
+	// A legacy terminal sends ESC + "a" for Alt+A. The previous defaults
+	// (ctrl+shift+a, alt+shift+tab) could not be produced there at all.
+	assert.ok(matchesKey("\x1ba", "alt+a"), "Alt+A must match ESC a");
+	const shortcut = [...h.shortcuts].find(([key]) => matchesKey("\x1ba", key));
+	assert.ok(shortcut, "no registered shortcut accepts the legacy Alt+A bytes");
+
+	while (h.statuses.agent !== undefined) await shortcut[1].handler(h.ctx);
+	await shortcut[1].handler(h.ctx);
+	assert.equal(h.statuses.agent, "agent:worker");
 });
 
 await check("/plan activates the planner", async () => {
@@ -399,6 +412,92 @@ await check("code-only still asks for bash", async () => {
 	await h.toolCall("bash", { command: "npm test" });
 	assert.equal(h.confirmations.length, 1);
 });
+
+await check("auto accepts any non-read call without confirmation or judge", async () => {
+	const realFetch = globalThis.fetch;
+	let fetchCalls = 0;
+	process.env.PI_JUDGE_URL = "http://judge.test/v1/systemone";
+	globalThis.fetch = async () => {
+		fetchCalls += 1;
+		throw new Error("auto mode must not call the judge");
+	};
+	try {
+		await h.commands.get("mode").handler("auto", h.ctx);
+		h.confirmations.length = 0;
+		assert.equal(await h.toolCall("bash", { command: "rm -rf build" }), undefined);
+		assert.equal(await h.toolCall("write", { path: "../outside.ts" }), undefined);
+		assert.equal(h.confirmations.length, 0);
+		assert.equal(fetchCalls, 0, "auto mode called the judge");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+// Judge-driven command approval in manual and code-only.
+const realFetch = globalThis.fetch;
+let judgeP = 0.95;
+let judgeCalls = 0;
+process.env.PI_JUDGE_URL = "http://judge.test/v1/systemone";
+globalThis.fetch = async (_url, init) => {
+	judgeCalls += 1;
+	const body = JSON.parse(String(init?.body ?? "{}"));
+	const key = Object.keys(body.questions ?? {})[0] ?? "command-safe";
+	return { json: async () => ({ answers: { [key]: { probabilities: { A: judgeP }, confidence: 0.9 } } }) };
+};
+
+try {
+	await check("manual auto-approves a command the judge rates safe", async () => {
+		await h.commands.get("mode").handler("manual", h.ctx);
+		h.confirmations.length = 0;
+		judgeCalls = 0;
+		judgeP = 0.95;
+		assert.equal(await h.toolCall("bash", { command: "npm test" }), undefined);
+		assert.equal(h.confirmations.length, 0);
+		assert.ok(judgeCalls > 0, "manual mode did not consult the judge");
+	});
+
+	await check("manual asks when the judge rates the command unsafe", async () => {
+		h.confirmations.length = 0;
+		judgeP = 0.05;
+		assert.equal(await h.toolCall("bash", { command: "rm -rf /tmp/x" }), undefined);
+		assert.equal(h.confirmations.length, 1);
+		assert.match(h.confirmations[0].message, /judge did not rate this command safe/);
+	});
+
+	await check("manual still asks for non-command calls when the judge is enabled", async () => {
+		h.confirmations.length = 0;
+		assert.equal(await h.toolCall("edit", { path: "src/app.ts" }), undefined);
+		assert.equal(h.confirmations.length, 1);
+		assert.doesNotMatch(h.confirmations[0].message, /judge/);
+	});
+
+	await check("code-only auto-approves a command the judge rates safe", async () => {
+		await h.commands.get("mode").handler("code-only", h.ctx);
+		h.confirmations.length = 0;
+		judgeP = 0.95;
+		assert.equal(await h.toolCall("dap", { action: "launch" }), undefined);
+		assert.equal(h.confirmations.length, 0);
+	});
+
+	await check("code-only asks when the judge rates the command unsafe", async () => {
+		h.confirmations.length = 0;
+		judgeP = 0.05;
+		assert.equal(await h.toolCall("bash", { command: "git push --force" }), undefined);
+		assert.equal(h.confirmations.length, 1);
+	});
+
+	await check("an unreachable judge leaves commands asking for confirmation", async () => {
+		globalThis.fetch = async () => {
+			throw new Error("judge offline");
+		};
+		h.confirmations.length = 0;
+		assert.equal(await h.toolCall("bash", { command: "npm test" }), undefined);
+		assert.equal(h.confirmations.length, 1);
+	});
+} finally {
+	process.env.PI_JUDGE_URL = "off";
+	globalThis.fetch = realFetch;
+}
 
 await check("approval shortcut rotates manual → code-only → auto", async () => {
 	await h.commands.get("mode").handler("manual", h.ctx);
@@ -543,7 +642,7 @@ await newExtension(h3);
 await h3.emit("session_start");
 
 await check("an invalid shortcut falls back to the default and warns", () => {
-	assert.ok(h3.shortcuts.has("alt+shift+tab"));
+	assert.ok(h3.shortcuts.has("alt+a"));
 	assert.ok(
 		h3.notifications.some(
 			(entry) => entry.type === "warning" && /invalid key "not a key"/.test(entry.message),

@@ -8,10 +8,20 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export const APPROVAL_MODES = ["manual", "code-only", "auto"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 
-/** Default shortcut for cycling agents. `shift+tab` is reserved by Pi. */
-export const DEFAULT_AGENT_CYCLE = "alt+shift+tab";
-/** Secondary agent-cycle shortcut, free of built-in conflicts. */
-export const DEFAULT_AGENT_CYCLE_ALT = "ctrl+shift+a";
+/**
+ * Default shortcut for cycling agents.
+ *
+ * A plain `alt+<letter>` is the only reliably typeable form: legacy terminals
+ * send it as ESC + the letter, while `ctrl+shift+<letter>` collapses to
+ * `ctrl+<letter>` and `alt+shift+tab` is swallowed by the OS (and needs the
+ * Kitty keyboard protocol to keep both modifiers).
+ */
+export const DEFAULT_AGENT_CYCLE = "alt+a";
+/**
+ * Secondary agent-cycle shortcut for terminals with the Kitty keyboard protocol
+ * (`alt+shift+tab`) and built-in keybinding conflicts avoided either way.
+ */
+export const DEFAULT_AGENT_CYCLE_ALT = "alt+shift+tab";
 /** Default shortcut for cycling approval modes. */
 export const DEFAULT_APPROVAL_CYCLE = "alt+m";
 /** Default agent rotation/completion order. */
